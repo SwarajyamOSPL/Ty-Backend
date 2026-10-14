@@ -1,5 +1,6 @@
-INFO:     Started server process [17720]
+F:\ty-automation-backend\app\main.py:6: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  from .routers import accounts, auth, dashboard, imports, parties, site_figures
+INFO:     Started server process [28024]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-INFO:     127.0.0.1:56506 - "POST /auth/login HTTP/1.1" 200 OK
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)

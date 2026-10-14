@@ -15,8 +15,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     admin = db.scalar(select(Admin).where(Admin.username == form.username))
     if not admin or not verify_password(form.password, admin.password_hash):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Bad credentials")
-    return Token(access_token=create_token(admin))
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid user name and/or password")
+    return Token(access_token=create_token(admin), username=admin.username)
 
 
 @router.get("/me", response_model=AdminOut)

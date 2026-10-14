@@ -18,7 +18,7 @@ def dashboard(db: Session = Depends(get_db)):
         return db.scalar(select(func.count()).select_from(Party).where(Party.kind == kind))
 
     def figure_total(kind):
-        return db.scalar(select(func.coalesce(func.sum(Figure.amount), 0))
+        return db.scalar(select(func.coalesce(func.sum(Figure.figure), 0))
                          .join(Party, Party.id == Figure.party_id).where(Party.kind == kind))
 
     return DashboardOut(

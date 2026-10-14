@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     # Used to encrypt stored account passwords. Changing it makes old passwords unreadable.
     encryption_key: str = "dev-encryption-key-change-me"
     access_token_expire_minutes: int = 480
+    # Frontend origins allowed to call the API (scheme://host:port), comma-separated, or * for any.
+    cors_origins: str = "*"
 
 
 settings = Settings()
