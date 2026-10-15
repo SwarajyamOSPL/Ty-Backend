@@ -9,12 +9,13 @@ is made up and let it be recalculated by hand, and list the saved values.
 from datetime import date
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..accounts_view import _links, recalc_site_figures
 from ..db import get_db
+from ..listing import Page, account_conditions, account_ids, page_params, paginate
 from ..models import Admin, Figure, Party, PartyAccount, PartyKind, SiteFigure
 from ..schemas import (AssignedCapper, CapperContribution, SavedSiteFigure, SiteFigureOut,
                        SiteFigureView, WeekRange)
@@ -105,13 +106,17 @@ def save_site_figure(party_id: int, account_id: int, week: WeekRange,
 
 
 @all_router.get("", response_model=list[SiteFigureOut], dependencies=[Depends(READ)])
-def list_site_figures(partner_id: int | None = None, account_id: int | None = None,
+def list_site_figures(response: Response, partner_id: int | None = None, account_id: int | None = None,
                       start_date: date | None = None, end_date: date | None = None,
-                      limit: int = 200, db: Session = Depends(get_db)):
-    """Saved Site Figures (one per account and week), newest week first. `partner_id` limits
-    them to that partner's accounts."""
-    q = (select(SiteFigure).order_by(SiteFigure.start_date.desc(), SiteFigure.id.desc())
-         .limit(min(limit, 2000)))
+                      username: str | None = None, website: str | None = None,
+                      partner: str | None = None, capper: str | None = None,
+                      search: str | None = None, pg: Page = Depends(page_params),
+                      db: Session = Depends(get_db)):
+    """Saved Site Figures (one per account and week), newest week first, one page at a time (see
+    app/listing.py). `partner_id` limits them to that partner's accounts. Case-insensitive
+    "contains" filters on the account: `username`, `website`, `partner` and `capper` (name), and
+    `search`, one box over all four."""
+    q = select(SiteFigure).order_by(SiteFigure.start_date.desc(), SiteFigure.id.desc())
     if partner_id:
         q = q.where(SiteFigure.account_id.in_(
             select(PartyAccount.account_id).where(PartyAccount.party_id == partner_id)))
@@ -121,7 +126,11 @@ def list_site_figures(partner_id: int | None = None, account_id: int | None = No
         q = q.where(SiteFigure.start_date >= start_date)
     if end_date:
         q = q.where(SiteFigure.end_date <= end_date)
-    rows = db.scalars(q).all()
+    conds = account_conditions(search=search, username=username, website=website,
+                               partner=partner, capper=capper)
+    if conds:
+        q = q.where(SiteFigure.account_id.in_(account_ids(conds)))
+    rows = paginate(db, q, response, pg)
     _, partners = _links(db, sorted({r.account_id for r in rows}))
     return [SiteFigureOut(id=s.id, account_id=s.account_id, username=s.account.username,
                           websites=s.account.websites, partners=partners.get(s.account_id, []),

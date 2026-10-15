@@ -2,18 +2,20 @@
 builds /partners/... and /cappers/... ."""
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import case, distinct, func, select
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import case, distinct, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..accounts_view import accounts_out, recalc_all_weeks, week_param
 from ..crypto import decrypt, encrypt
 from ..db import get_db
+from ..listing import (Page, account_conditions, account_ids, account_search, contains, page_params,
+                       paginate)
 from ..models import Account, AccountWebsite, Figure, Party, PartyAccount, PartyKind, Admin, SiteFigure
 from ..schemas import (AccountCredentials, AccountOut, AssignIn, AssignmentOut, CapperFigureCreate,
-                       ColorOut, FigureOut, PartnerFigureCreate, PartyCreate, PartyDetail, PartyOut,
-                       RelatedParty)
+                       ColorOut, FigureOut, PartnerFigureCreate, PartyCreate, PartyDetail, PartyListItem,
+                       PartyOut, RelatedParty)
 from ..security import READ, WRITE
 
 
@@ -70,19 +72,24 @@ def build_router(kind: PartyKind, prefix: str) -> APIRouter:
             raise HTTPException(status.HTTP_409_CONFLICT, f"{label.title()} name already exists")
         return party
 
-    @router.get("", response_model=list[PartyOut], dependencies=[Depends(READ)])
-    def list_parties(prefix: str | None = None, limit: int | None = Query(None, ge=1),
-                     db: Session = Depends(get_db)):
-        """All parties, A-Z. With `prefix`, only names starting with it (case-insensitive) -
-        use this for the type-ahead search fields. `limit` is optional; without it every
-        party is returned."""
+    @router.get("", response_model=list[PartyListItem], dependencies=[Depends(READ)])
+    def list_parties(response: Response, prefix: str | None = None, search: str | None = None,
+                     pg: Page = Depends(page_params), db: Session = Depends(get_db)):
+        """Parties A-Z, one page at a time (see app/listing.py). With `prefix`, only names
+        starting with it (case-insensitive) - use this for the type-ahead search fields. With
+        `search`, only names containing it."""
         q = select(Party).where(Party.kind == kind).order_by(Party.name_key, Party.id)
-        if limit:
-            q = q.limit(limit)
         if prefix:
             q = q.where(Party.name_key.like(prefix.strip().lower().replace("%", r"\%")
                                             .replace("_", r"\_") + "%", escape="\\"))
-        return db.scalars(q).all()
+        if search and search.strip():
+            q = q.where(contains(Party.name, search))
+        rows = paginate(db, q, response, pg)
+        counts = dict(db.execute(
+            select(PartyAccount.party_id, func.count()).where(PartyAccount.party_id.in_([p.id for p in rows]))
+            .group_by(PartyAccount.party_id)).all()) if rows else {}
+        return [PartyListItem(id=p.id, name=p.name, created_at=p.created_at,
+                              account_count=counts.get(p.id, 0)) for p in rows]
 
     # --- details of one partner / capper ---
     @router.get("/{party_id:int}", response_model=PartyDetail, dependencies=[Depends(READ)])
@@ -163,24 +170,29 @@ def build_router(kind: PartyKind, prefix: str) -> APIRouter:
 
     @router.get("/{party_id}/accounts", response_model=list[AccountOut],
                 dependencies=[Depends(READ)])
-    def party_accounts(party_id: int, prefix: str | None = None, username: str | None = None,
-                       start_date: date | None = None, end_date: date | None = None,
+    def party_accounts(response: Response, party_id: int, prefix: str | None = None,
+                       username: str | None = None, website: str | None = None,
+                       partner: str | None = None, capper: str | None = None,
+                       search: str | None = None, start_date: date | None = None,
+                       end_date: date | None = None, pg: Page = Depends(page_params),
                        db: Session = Depends(get_db)):
-        """Accounts under this party (second dropdown / account search), each with its cappers,
-        partners and Site Figure (latest week, or the week given by `start_date` and `end_date`).
-        `prefix` filters by website name start, `username` by the start of the username."""
+        """Accounts under this party (second dropdown / account search), one page at a time (see
+        app/listing.py), each with its cappers, partners and Site Figure (latest week, or the
+        week given by `start_date` and `end_date`). `prefix` filters by website name start; the
+        other filters are case-insensitive "contains": `username`, `website`, `partner` and
+        `capper` (name), and `search`, one box over all four."""
         week = week_param(start_date, end_date)
         _party(db, kind, party_id)
         q = (select(Account).join(PartyAccount, PartyAccount.account_id == Account.id)
-             .where(PartyAccount.party_id == party_id).order_by(Account.id))
+             .where(PartyAccount.party_id == party_id,
+                    *account_conditions(search=search, username=username, website=website,
+                                        partner=partner, capper=capper))
+             .order_by(Account.id))
         if prefix:
             like = prefix.strip().replace("%", r"\%").replace("_", r"\_") + "%"
             q = q.where(Account.id.in_(select(AccountWebsite.account_id).where(
                 AccountWebsite.website.ilike(like, escape="\\"))))
-        if username:
-            ulike = username.strip().replace("%", r"\%").replace("_", r"\_") + "%"
-            q = q.where(Account.username.ilike(ulike, escape="\\"))
-        return accounts_out(db, db.scalars(q).all(), week)
+        return accounts_out(db, paginate(db, q, response, pg), week)
 
     @router.delete("/{party_id}/accounts/{account_id}", status_code=204)
     def unassign(party_id: int, account_id: int, db: Session = Depends(get_db),
@@ -195,10 +207,23 @@ def build_router(kind: PartyKind, prefix: str) -> APIRouter:
 
     @router.get("/assignments/all", response_model=list[AssignmentOut],
                 dependencies=[Depends(READ)])
-    def all_assignments(db: Session = Depends(get_db)):
-        q = (select(PartyAccount).join(Party).where(Party.kind == kind)
-             .order_by(PartyAccount.id.desc()))
-        return [_assignment_out(pa) for pa in db.scalars(q)]
+    def all_assignments(response: Response, party: str | None = None, username: str | None = None,
+                        website: str | None = None, search: str | None = None,
+                        pg: Page = Depends(page_params), db: Session = Depends(get_db)):
+        """Assignments, newest first, one page at a time (see app/listing.py). Case-insensitive
+        "contains" filters: `party` (the partner/capper name), `username`, `website`, and
+        `search`, one box over all three."""
+        q = (select(PartyAccount).join(Party, Party.id == PartyAccount.party_id)
+             .where(Party.kind == kind).order_by(PartyAccount.id.desc()))
+        if party and party.strip():
+            q = q.where(contains(Party.name, party))
+        conds = account_conditions(username=username, website=website)
+        if conds:
+            q = q.where(PartyAccount.account_id.in_(account_ids(conds)))
+        if search and search.strip():
+            q = q.where(or_(contains(Party.name, search),
+                            PartyAccount.account_id.in_(account_ids([account_search(search)]))))
+        return [_assignment_out(pa) for pa in paginate(db, q, response, pg)]
 
     # --- enter figure ---
     @router.get("/{party_id}/accounts/{account_id}/credentials",
@@ -227,15 +252,28 @@ def build_router(kind: PartyKind, prefix: str) -> APIRouter:
         return _figure_out(fig)
 
     @router.get("/figures/all", response_model=list[FigureOut], dependencies=[Depends(READ)])
-    def list_figures(party_id: int | None = None, account_id: int | None = None,
-                     limit: int = 200, db: Session = Depends(get_db)):
-        q = (select(Figure).join(Party).where(Party.kind == kind)
-             .order_by(Figure.figure_date.desc(), Figure.id.desc()).limit(min(limit, 2000)))
+    def list_figures(response: Response, party_id: int | None = None, account_id: int | None = None,
+                     party: str | None = None, username: str | None = None,
+                     website: str | None = None, search: str | None = None,
+                     pg: Page = Depends(page_params), db: Session = Depends(get_db)):
+        """Entered figures, newest first, one page at a time (see app/listing.py). Case-insensitive
+        "contains" filters: `party` (the partner/capper name), `username`, `website`, and
+        `search`, one box over all three."""
+        q = (select(Figure).join(Party, Party.id == Figure.party_id).where(Party.kind == kind)
+             .order_by(Figure.figure_date.desc(), Figure.id.desc()))
         if party_id:
             q = q.where(Figure.party_id == party_id)
         if account_id:
             q = q.where(Figure.account_id == account_id)
-        return [_figure_out(f) for f in db.scalars(q)]
+        if party and party.strip():
+            q = q.where(contains(Party.name, party))
+        conds = account_conditions(username=username, website=website)
+        if conds:
+            q = q.where(Figure.account_id.in_(account_ids(conds)))
+        if search and search.strip():
+            q = q.where(or_(contains(Party.name, search),
+                            Figure.account_id.in_(account_ids([account_search(search)]))))
+        return [_figure_out(f) for f in paginate(db, q, response, pg)]
 
     return router
 

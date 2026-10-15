@@ -12,6 +12,7 @@ app.add_middleware(
     allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "X-Page", "X-Page-Size", "X-Total-Pages"],  # paging, see app/listing.py
 )
 app.include_router(auth.router)
 app.include_router(dashboard.router)

@@ -51,6 +51,10 @@ class PartyOut(ORM):
     created_at: datetime
 
 
+class PartyListItem(PartyOut):
+    account_count: int              # accounts assigned to this partner/capper
+
+
 class RelatedParty(BaseModel):
     id: int
     name: str

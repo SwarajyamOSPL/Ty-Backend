@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..accounts_view import accounts_out, recalc_all_weeks, week_param
 from ..crypto import decrypt, encrypt
 from ..db import get_db
+from ..listing import Page, account_conditions, page_params, paginate
 from ..models import Account, AccountWebsite, Admin, Party, PartyAccount, PartyKind, SiteFigure
 from ..schemas import AccountCreate, AccountOut, AccountSiteFigure, CapperIds
 from ..security import READ, WRITE
@@ -93,17 +94,20 @@ def create_account(body: AccountCreate, response: Response, db: Session = Depend
 
 
 @router.get("", response_model=list[AccountOut], dependencies=[Depends(READ)])
-def list_accounts(website: str | None = None, start_date: date | None = None,
-                  end_date: date | None = None, db: Session = Depends(get_db)):
-    """All accounts, newest first, each with its cappers, partners and Site Figure. Optional
-    `website` prefix filter (matches any of an account's websites). The Site Figure is the latest
-    week's unless `start_date` and `end_date` ask for a specific week."""
+def list_accounts(response: Response, website: str | None = None, username: str | None = None,
+                  partner: str | None = None, capper: str | None = None, search: str | None = None,
+                  start_date: date | None = None, end_date: date | None = None,
+                  pg: Page = Depends(page_params), db: Session = Depends(get_db)):
+    """Accounts, newest first, one page at a time (see app/listing.py), each with its cappers,
+    partners and Site Figure. Filters (case-insensitive "contains", all must match): `website`
+    (any of the account's websites), `username`, `partner` and `capper` (name), and `search`,
+    one box over all four. The Site Figure is the latest week's unless `start_date` and
+    `end_date` ask for a specific week."""
     week = week_param(start_date, end_date)
-    q = select(Account).order_by(Account.id.desc())
-    if website:
-        q = q.where(Account.id.in_(select(AccountWebsite.account_id).where(
-            AccountWebsite.website.ilike(f"{website.strip()}%"))))
-    return accounts_out(db, db.scalars(q).all(), week)
+    q = (select(Account).where(*account_conditions(search=search, username=username, website=website,
+                                                   partner=partner, capper=capper))
+         .order_by(Account.id.desc()))
+    return accounts_out(db, paginate(db, q, response, pg), week)
 
 
 @router.get("/{account_id}", response_model=AccountOut, dependencies=[Depends(READ)])
@@ -139,11 +143,12 @@ def set_account_cappers(account_id: int, body: CapperIds, db: Session = Depends(
 
 @router.get("/{account_id}/site-figures", response_model=list[AccountSiteFigure],
             dependencies=[Depends(READ)])
-def account_site_figures(account_id: int, db: Session = Depends(get_db)):
-    """The account's Site Figure for every week, newest first."""
+def account_site_figures(account_id: int, response: Response, pg: Page = Depends(page_params),
+                         db: Session = Depends(get_db)):
+    """The account's Site Figure for every week, newest first, one page at a time."""
     if not db.get(Account, account_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
-    rows = db.scalars(select(SiteFigure).where(SiteFigure.account_id == account_id)
-                      .order_by(SiteFigure.start_date.desc(), SiteFigure.id.desc())).all()
+    rows = paginate(db, select(SiteFigure).where(SiteFigure.account_id == account_id)
+                    .order_by(SiteFigure.start_date.desc(), SiteFigure.id.desc()), response, pg)
     return [AccountSiteFigure(start_date=r.start_date, end_date=r.end_date, site_figure=r.site_figure,
                               calculated_at=r.calculated_at) for r in rows]

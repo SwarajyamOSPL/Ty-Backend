@@ -32,11 +32,22 @@ def test_full_flow():
     assert (zz1.json()["name"], zz2.json()["name"]) == ("Zz Top", "zz TOP")  # spaces trimmed/collapsed
     assert [x["name"] for x in c.get("/partners", params={"prefix": "zz"}, headers=h).json()] == ["Zz Top", "zz TOP"]
     p2 = c.post("/partners", json={"name": "Bravo"}, headers=h).json()
-    for i in range(105):  # list must not stop at 100
+    for i in range(105):  # paged: 50 by default, X-* headers say how many there are
         c.post("/partners", json={"name": f"Bulk {i:03d}"}, headers=h)
-    assert len(c.get("/partners", headers=h).json()) == 4 + 105
-    assert len(c.get("/partners", params={"limit": 5}, headers=h).json()) == 5
+    r = c.get("/partners", headers=h)
+    assert len(r.json()) == 50 and r.headers["X-Total-Count"] == str(4 + 105)
+    assert (r.headers["X-Page"], r.headers["X-Page-Size"], r.headers["X-Total-Pages"]) == ("1", "50", "3")
+    seen = []
+    for page in (1, 2, 3, 4):  # every partner exactly once across the pages; past the end is empty
+        seen += [x["id"] for x in c.get("/partners", params={"page": page, "page_size": 50}, headers=h).json()]
+    assert len(seen) == len(set(seen)) == 4 + 105
+    assert len(c.get("/partners", params={"page_size": 500}, headers=h).json()) == 4 + 105
+    assert len(c.get("/partners", params={"limit": 5}, headers=h).json()) == 5  # old name of page_size
     assert c.get("/partners", params={"limit": 0}, headers=h).status_code == 422
+    assert c.get("/partners", params={"page": 0}, headers=h).status_code == 422
+    assert c.get("/partners", params={"page_size": 501}, headers=h).status_code == 422
+    assert [x["name"] for x in c.get("/partners", params={"search": "ulk 10"}, headers=h).json()] == \
+        [f"Bulk {i}" for i in range(100, 105)]  # "contains", any case
     # capper names stay unique
     assert c.post("/cappers", json={"name": "  Dark   Red "}, headers=h).json()["name"] == "Dark Red"  # new colors are fine
     cap = c.post("/cappers", json={"name": " lime  GREEN "}, headers=h)
