@@ -110,6 +110,25 @@ class Figure(Base):
     account: Mapped[Account] = relationship()
 
 
+class UnregisteredFigure(Base):
+    """A row of a capper sheet that could not be saved as a figure because its username is not one of
+    the capper's accounts (no such account at all: "not registered account"; or an account the
+    capper is not assigned to). Kept so those rows can be reviewed later. An import of the same
+    capper and week replaces the rows of the previous import."""
+    __tablename__ = "unregistered_figures"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    capper_id: Mapped[int] = mapped_column(ForeignKey("parties.id"), index=True)
+    username: Mapped[str] = mapped_column(String(255), index=True)
+    website: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    figure: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    start_date: Mapped[date] = mapped_column(Date, index=True)
+    end_date: Mapped[date] = mapped_column(Date)
+    notes: Mapped[str] = mapped_column(String(255))
+    imported_by: Mapped[int | None] = mapped_column(ForeignKey("admin_credentials.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    capper: Mapped[Party] = relationship()
+
+
 class SiteFigure(Base):
     """An account's Site Figure for one week: the sum (can be negative) of the figures of every
     capper assigned to the account for that week. One row per account and week, shared by all

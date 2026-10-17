@@ -119,7 +119,7 @@ def test_site_figure_from_imports():
     # Red imports week 1: U1 -50.5 (negative), U2 20, someone else's account is skipped
     r = e.upload(red, {W1: [["Website", "Username", "TOTAL"], ["s.com", "u1", -50.5], ["t.com", "U2", 20], ["z.com", "nobody", 5]]})
     assert r.status_code == 200, r.text
-    assert (r.json()["created"], r.json()["skipped"], r.json()["site_figures_updated"]) == (2, 1, 2)
+    assert (r.json()["created"], r.json()["unregistered_rows"], r.json()["site_figures_updated"]) == (2, 1, 2)
     assert e.site_figure(a["id"]) == "-50.50" and e.site_figure(b["id"]) == "20.00"   # Site Figure set by the import itself
     # Blue imports the same week: the Site Figure of the shared accounts adds up (negative included)
     r = e.upload(blue, {W1: [["username", "pnl"], ["U1", 30], ["u3", -100]]})

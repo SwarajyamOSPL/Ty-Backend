@@ -78,6 +78,19 @@ class PartyDetail(BaseModel):
     site_figure_end_date: date | None = None
     site_figure_total: Decimal | None = None
     accounts_with_site_figure: int = 0
+    # Figure total of the capper (cappers only): the sum of its figures over all weeks, or over the
+    # one week asked for (figure_start_date / figure_end_date are then set). Where an account has
+    # several entries for the same week only the latest counts.
+    figure_total: Decimal | None = None
+    figure_count: int = 0           # how many figures (account-weeks) the total adds up
+    figure_weeks: int = 0           # how many different weeks they cover
+    figure_start_date: date | None = None
+    figure_end_date: date | None = None
+    # The same for the rows of imported sheets that were not saved as figures (accounts that are not
+    # registered, or not this capper's; see /cappers/figures/unregistered), and both added together.
+    unregistered_figure_total: Decimal | None = None
+    unregistered_figure_count: int = 0
+    figure_total_all: Decimal | None = None   # figure_total + unregistered_figure_total
 
 
 # ---- accounts ----
@@ -245,14 +258,16 @@ class SheetResult(BaseModel):
     sheet_name: str
     start_date: date
     end_date: date
-    week_from: str                  # where the week was read from: "sheet title" or "sheet name"
+    week_from: str                  # where the week was read from: "sheet title", "date cell" or "sheet name"
     header_row: int                 # row of the header (username / figure columns)
     figure_column: str              # the column used as the figure, e.g. "TOTAL"
     created: int
     updated: int
     site_figures_updated: int       # accounts whose Site Figure for this week was recalculated
-    skipped: int                    # rows ignored: username is not one of the capper's accounts
-    skipped_usernames: list[str]    # distinct skipped usernames (first 200)
+    unregistered_rows: int          # rows whose username is not one of the capper's accounts (kept with a note)
+    ignored_rows: int = 0           # rows with no username, no figure, or a figure that is not a number
+    repeated_ignored: int = 0       # rows ignored: the same account with the same figure appeared again
+    summed_rows: int = 0            # rows added to an earlier row of the same account (a different figure)
 
 
 class ImportResult(BaseModel):
@@ -260,10 +275,43 @@ class ImportResult(BaseModel):
     capper_name: str
     created: int                    # totals over all worksheets
     updated: int
-    skipped: int
+    unregistered_rows: int          # kept with a note: GET /cappers/figures/unregistered (or /imported)
+    ignored_rows: int = 0
     site_figures_updated: int       # accounts whose Site Figure was recalculated
     sheets: list[SheetResult]
     ignored_sheets: list[str]       # worksheets without username/figure columns
+
+
+class ImportedRowOut(BaseModel):
+    """One row of imported capper sheets: a saved figure of a registered account, or a row that was
+    kept because the account is not registered (see `notes`)."""
+    source: str                     # "registered" (saved as a figure) or "unregistered" (kept with a note)
+    id: int                         # id in /cappers/figures/all (registered) or /cappers/figures/unregistered
+    capper_id: int
+    capper_name: str
+    account_id: int | None          # null when the username is not an account in the database
+    username: str
+    websites: list[str]
+    partners: list[PartyRef]
+    figure: Decimal
+    start_date: date | None
+    end_date: date | None
+    notes: str | None               # "not registered account" / "account not assigned to this capper"; null when saved
+    created_at: datetime
+
+
+class UnregisteredFigureOut(BaseModel):
+    id: int
+    capper_id: int
+    capper_name: str
+    username: str
+    website: str | None
+    figure: Decimal
+    start_date: date
+    end_date: date
+    notes: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DashboardOut(BaseModel):

@@ -17,6 +17,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(dashboard.router)
 app.include_router(imports.router)
+app.include_router(imports.unregistered_router)
+app.include_router(imports.imported_router)
 app.include_router(parties.partners)
 app.include_router(parties.cappers)
 app.include_router(site_figures.router)

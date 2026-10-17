@@ -1,6 +1,7 @@
 """Partner and capper endpoints. Both are the same shape, so one router factory
 builds /partners/... and /cappers/... ."""
 from datetime import date
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import case, distinct, func, or_, select
@@ -12,7 +13,8 @@ from ..crypto import decrypt, encrypt
 from ..db import get_db
 from ..listing import (Page, account_conditions, account_ids, account_search, contains, page_params,
                        paginate)
-from ..models import Account, AccountWebsite, Figure, Party, PartyAccount, PartyKind, Admin, SiteFigure
+from ..models import (Account, AccountWebsite, Admin, Figure, Party, PartyAccount, PartyKind, SiteFigure,
+                      UnregisteredFigure)
 from ..schemas import (AccountCredentials, AccountOut, AssignIn, AssignmentOut, CapperFigureCreate,
                        ColorOut, FigureOut, PartnerFigureCreate, PartyCreate, PartyDetail, PartyListItem,
                        PartyOut, RelatedParty)
@@ -96,7 +98,10 @@ def build_router(kind: PartyKind, prefix: str) -> APIRouter:
     def party_detail(party_id: int, start_date: date | None = None, end_date: date | None = None,
                      db: Session = Depends(get_db)):
         """Summary of this partner (or capper): number of accounts, balances, who it is linked to
-        and (partners) the Site Figure total for the latest week, or for `start_date`..`end_date`."""
+        and (partners) the Site Figure total for the latest week, or for `start_date`..`end_date`.
+        For a capper: `figure_total`, the sum of all its figures (all weeks), or only of the week
+        `start_date`..`end_date` when given. `unregistered_figure_total` is the same sum over the sheet
+        rows kept as unregistered, and `figure_total_all` is both added together."""
         week = week_param(start_date, end_date)
         party = _party(db, kind, party_id)
         mine = select(PartyAccount.account_id).where(PartyAccount.party_id == party_id)
@@ -135,6 +140,26 @@ def build_router(kind: PartyKind, prefix: str) -> APIRouter:
                     select(func.coalesce(func.sum(SiteFigure.site_figure), 0), func.count())
                     .where(SiteFigure.account_id.in_(mine), SiteFigure.start_date == week[0],
                            SiteFigure.end_date == week[1])).one()
+        fig_total = unr_total = all_total = None
+        fig_count = fig_weeks = unr_count = 0
+        if kind == PartyKind.capper:
+            q = select(Figure.account_id, Figure.start_date, Figure.end_date, Figure.figure).where(
+                Figure.party_id == party_id).order_by(Figure.id)
+            if week:
+                q = q.where(Figure.start_date == week[0], Figure.end_date == week[1])
+            latest: dict[tuple, Decimal] = {}  # one figure per account and week: the latest entry wins
+            for account_id, f_start, f_end, figure in db.execute(q):
+                latest[(account_id, f_start, f_end)] = figure
+            fig_total = sum(latest.values(), Decimal("0"))
+            fig_count = len(latest)
+            fig_weeks = len({(k[1], k[2]) for k in latest})
+            uq = select(func.coalesce(func.sum(UnregisteredFigure.figure), 0), func.count()).where(
+                UnregisteredFigure.capper_id == party_id)
+            if week:
+                uq = uq.where(UnregisteredFigure.start_date == week[0], UnregisteredFigure.end_date == week[1])
+            unr_total, unr_count = db.execute(uq).one()
+            unr_total = Decimal(unr_total)
+            all_total = fig_total + unr_total
         return PartyDetail(
             id=party.id, name=party.name, created_at=party.created_at, account_count=account_count,
             shared_account_count=shared, total_balance=total_balance,
@@ -142,7 +167,11 @@ def build_router(kind: PartyKind, prefix: str) -> APIRouter:
             cappers=related if kind == PartyKind.partner else [],
             partners=related if kind == PartyKind.capper else [],
             site_figure_start_date=sf_start, site_figure_end_date=sf_end, site_figure_total=sf_total,
-            accounts_with_site_figure=sf_count)
+            accounts_with_site_figure=sf_count, figure_total=fig_total, figure_count=fig_count,
+            figure_weeks=fig_weeks, unregistered_figure_total=unr_total, unregistered_figure_count=unr_count,
+            figure_total_all=all_total,
+            figure_start_date=week[0] if kind == PartyKind.capper and week else None,
+            figure_end_date=week[1] if kind == PartyKind.capper and week else None)
 
     # --- assign account ---
     @router.post("/{party_id}/accounts", response_model=AssignmentOut, status_code=201,

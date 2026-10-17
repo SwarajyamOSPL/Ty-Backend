@@ -218,11 +218,11 @@ def test_excel_import(monkeypatch):
     r = upload(good)
     assert r.status_code == 200, r.text
     j = r.json()
-    assert (j["created"], j["updated"], j["skipped"]) == (5, 0, 3) and j["ignored_sheets"] == ["Notes"]
+    assert (j["created"], j["updated"], j["unregistered_rows"], j["ignored_rows"]) == (5, 0, 2, 1) and j["ignored_sheets"] == ["Notes"]
     by_sheet = {x["sheet_name"]: x for x in j["sheets"]}
     w1 = by_sheet["10-6 - 10-12"]
     assert (w1["start_date"], w1["end_date"]) == ("2026-10-06", "2026-10-12")
-    assert (w1["created"], w1["skipped"]) == (3, 3) and w1["skipped_usernames"] == ["someone_else", "another"]
+    assert (w1["created"], w1["unregistered_rows"], w1["ignored_rows"]) == (3, 2, 1)
     w2 = by_sheet["Sept 29 - Oct 5"]
     assert (w2["start_date"], w2["end_date"]) == ("2026-09-29", "2026-10-05")
     saved = figs()
@@ -267,14 +267,23 @@ def test_excel_import(monkeypatch):
     assert r.status_code == 422 and "username" in errors(r)[0]
     assert upload(book({"10-6 - 10-12": (("website", "figure"), [(1, 2)])})).status_code == 422  # username required
 
-    # all-or-nothing across sheets: a bad figure or repeated username anywhere rejects everything
+    # all-or-nothing across sheets: a bad figure anywhere rejects everything
     bad = book({"10-6 - 10-12": [("u1", 5), ("u2", "abc"), ("u1", 4)], "9-29 - 10-5": [("u1", 8)]})
     r = upload(bad)
-    assert r.status_code == 422 and len(errors(r)) == 2 and all("[10-6 - 10-12]" in e for e in errors(r))
+    assert r.status_code == 422 and len(errors(r)) == 1 and "[10-6 - 10-12]" in errors(r)[0]
     assert len(figs()) == before
+    # the same username again with the SAME figure is ignored; with a different figure the figures are added
+    r = upload(book({"10-6 - 10-12": [("u1", 5), ("u1", 5)]}))
+    assert r.status_code == 200 and r.json()["sheets"][0]["repeated_ignored"] == 1 and r.json()["sheets"][0]["created"] + r.json()["sheets"][0]["updated"] == 1
+    r = upload(book({"10-6 - 10-12": [("u1", 5), ("u1", 5.0), ("u1", "5.00")]}))
+    assert r.status_code == 200 and r.json()["sheets"][0]["repeated_ignored"] == 2
+    r = upload(book({"10-6 - 10-12": [("u1", 5), ("u1", 6), ("u1", 5), ("u1", -2)]}))
+    sh = r.json()["sheets"][0]
+    assert r.status_code == 200 and (sh["summed_rows"], sh["repeated_ignored"]) == (2, 1)
+    assert [f["figure"] for f in figs() if f["username"] == "u1" and f["start_date"] == sh["start_date"]].count("9.00") == 1  # 5 + 6 - 2; the second 5 is a repeat
     # nothing matches in any sheet -> rejected (probably the wrong file)
     r = upload(book({"10-6 - 10-12": [("x1", 1), ("x2", 2)]}))
-    assert r.status_code == 422 and "2 row(s) skipped" in errors(r)[0]
+    assert r.status_code == 422 and "2 row(s) not saved" in errors(r)[0]
     # a sheet with no matching rows is fine as long as another sheet matches
     r = upload(book({"10-6 - 10-12": [("x1", 1)], "9-29 - 10-5": [("u1", 9)]}))
     assert r.status_code == 200 and sorted(x["created"] + x["updated"] for x in r.json()["sheets"]) == [0, 1]

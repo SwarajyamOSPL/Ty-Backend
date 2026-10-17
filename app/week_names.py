@@ -3,7 +3,11 @@
 Excel does not allow "/" in sheet names, so weeks are written in many other ways. Understood:
   "10-6 - 10-12", "10.6-10.12", "10 6 - 10 12", "Oct 6 - Oct 12", "October 6-12", "6 Oct - 12 Oct",
   "2026-10-06 to 2026-10-12", "10-06-2026 - 10-12-2026", "106 1011", "106-1011", "1006 1011",
-  "10-6" (start date only: the week is then 7 days, start + 6).
+  "10-6" (start date only: the week is then 7 days, start + 6; but a Sunday such as "104" = Oct 4 2026
+  is the LAST day of a Monday-Sunday week: Sep 28 - Oct 4).
+  "April w2", "Apr week 2", "week 2 of April", "April W2 2025" (week N of a month, see below).
+Week N of a month: weeks run Monday to Sunday and week 1 is the one that contains the 1st of the
+month (as in "October Week 1 (September 28th - October 4th)"), so April 2026 w2 = Apr 6 - Apr 12.
 Month comes first (US style). Other words in the name (a capper name, "week", ...) are ignored.
 When the year is not in the name (the usual case) it is worked out from a reference date
 (default: today): the latest year in which the week does not start more than 7 days after it.
@@ -31,6 +35,11 @@ _TOKEN = re.compile(r"""
   | (?P<blob>\d{3,4})(?!\d)
   | (?P<bare>\d{1,2})(?!\d)
 """, re.X)
+
+_WEEK_OF_MONTH = [
+    re.compile(rf"\b({_MONTH_RE})\.?[\s_-]*(?:w|wk|week)\s*\.?\s*(\d)(?!\d)(?:\D*?(20\d\d))?", re.I),
+    re.compile(rf"\b(?:w|wk|week)\s*\.?\s*(\d)(?!\d)\s*(?:of\s+)?({_MONTH_RE})\b(?:\D*?(20\d\d))?", re.I),
+]
 
 MAX_SPAN_DAYS = 31
 FUTURE_TOLERANCE_DAYS = 7  # a week may start at most this many days after as_of
@@ -131,11 +140,38 @@ def _resolve(start_opt, end_opt, year_hint: int | None, today: date):
     return start, end
 
 
+def _week_of_month(name: str, today: date):
+    """(start, end) for "April w2" style names, None if the name is not of that kind or the week
+    does not exist (e.g. a 6th week in a month that only has five)."""
+    for n, pattern in enumerate(_WEEK_OF_MONTH):
+        m = pattern.search(name)
+        if not m:
+            continue
+        month_word, week_no, year = (m.group(1), m.group(2), m.group(3)) if n == 0 else (m.group(2), m.group(1), m.group(3))
+        month, week_no = _month_number(month_word), int(week_no)
+        if not 1 <= week_no <= 6:
+            return None
+        years = [int(year)] if year else [today.year + 1, today.year, today.year - 1]
+        for y in years:
+            first = date(y, month, 1)
+            start = first - timedelta(days=first.weekday()) + timedelta(days=7 * (week_no - 1))
+            if (start.month, start.year) > (month, y) and start > first:
+                continue  # that week is already in the next month: this month has no such week that year
+            if year or start <= today + timedelta(days=FUTURE_TOLERANCE_DAYS):
+                return start, start + timedelta(days=6)
+        return None
+    return None
+
+
 def parse_week(name: str, as_of: date | None = None) -> tuple[date, date]:
     """Returns (start, end) for a sheet name, or raises ValueError. `as_of` is the reference
     date used to pick the year when the name has none (default: today)."""
     today = as_of or date.today()
     items, bares, year_hint = _tokens(name)
+    if len(items) != 2:  # two dates are the week itself; otherwise "April w2" means week 2 of April
+        by_month = _week_of_month(name, today)
+        if by_month:
+            return by_month
     combos: list[tuple] = []  # (start option, end option)
 
     if len(items) == 2:                                # (stray numbers like "Week 1" are ignored)
@@ -146,8 +182,11 @@ def parse_week(name: str, as_of: date | None = None) -> tuple[date, date]:
         for s in items[0]:
             start = _resolve(s, s, year_hint, today)
             if start:
-                end = start[0] + timedelta(days=6)
-                combos.append(((start[0].year, start[0].month, start[0].day),
+                first = start[0]
+                if first.weekday() == 6:      # a Sunday: the week is Monday-Sunday and ends on that day ("104")
+                    first -= timedelta(days=6)
+                end = first + timedelta(days=6)
+                combos.append(((first.year, first.month, first.day),
                                (end.year, end.month, end.day)))
     elif not items and len(bares) == 4:                # "10 6 - 10 12"
         combos = [((None, bares[0], bares[1]), (None, bares[2], bares[3]))]
